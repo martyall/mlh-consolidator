@@ -1,0 +1,16 @@
+{
+  "name": "mlh-to-json",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "tidy": "purs-tidy format-in-place \"src/**/*.purs\""
+  },
+  "devDependencies": {
+    "purescript": "0.15.15",
+    "purs-tidy": "0.11.0",
+    "spago": "0.21.0"
+  },
+  "author": "",
+  "license": "ISC"
+}
