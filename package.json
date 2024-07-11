@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "spago build",
     "tidy": "purs-tidy format-in-place \"src/**/*.purs\""
   },
   "devDependencies": {
