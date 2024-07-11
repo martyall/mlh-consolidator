@@ -5,10 +5,10 @@ import Prelude
 import Data.Either (Either(..))
 import Effect (Effect)
 import Effect.Aff (launchAff_)
-import MLHParser (Ident(..), Statement(..), Value(..), parseIdent, parseStatement, parseString, parseValue)
+import MLHParser (Ident(..), Statement(..), Value(..), asFilePath, parseIdent, parseStatement, parseString, parseValue)
 import Parsing (runParser)
-import Test.Spec (Spec, describe, it, pending)
-import Test.Spec.Assertions (shouldEqual)
+import Test.Spec (Spec, describe, it)
+import Test.Spec.Assertions (fail, shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 
@@ -64,6 +64,9 @@ statementSpec =
     it "can parse an undef statement" $ 
       runParser "[%%undef hello]" parseStatement `shouldEqual` Right (StmtUndef (Ident "hello"))
     it "can parse an import statement" $ 
-      runParser "[%%import \"../src/Main.purs\"]" parseStatement `shouldEqual` Right (StmtImport "../src/Main.purs")
+      case runParser "[%%import \"fixtures/cfg/medium.mlh\"]" parseStatement of
+        Right (StmtImport fp) -> asFilePath fp `shouldEqual` "fixtures/cfg/medium.mlh"
+        Right _ -> fail "Parser mismatch"
+        Left err -> fail $ show err
     it "can parse a comment" $ 
-      runParser "(* this is ( * a * comment*)" parseStatement `shouldEqual` Right (Comment " this is ( * a * comment")  
+      runParser "(* this is ( * a * comment*)" parseStatement `shouldEqual` Right (StmtComment " this is ( * a * comment")  
