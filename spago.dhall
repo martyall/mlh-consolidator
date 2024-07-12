@@ -20,7 +20,6 @@ to generate this file without the comments in this block.
   , "effect"
   , "either"
   , "foldable-traversable"
-  , "foreign-object"
   , "lists"
   , "maybe"
   , "node-buffer"
@@ -28,13 +27,10 @@ to generate this file without the comments in this block.
   , "node-path"
   , "node-process"
   , "numbers"
-  , "ordered-collections"
   , "parsing"
   , "prelude"
-  , "profunctor"
   , "spec"
   , "strings"
-  , "tuples"
   ]
 , packages = ./packages.dhall
 , sources = [ "src/**/*.purs", "test/**/*.purs" ]

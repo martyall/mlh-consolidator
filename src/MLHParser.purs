@@ -4,23 +4,20 @@ import Prelude hiding (between)
 
 import Control.Alternative ((<|>))
 import Data.Argonaut as A
-import Data.Array (concatMap, fromFoldable)
-import Data.Either (Either(..))
-import Data.Foldable (class Foldable, foldM, intercalate)
-import Data.List (List(..), (:))
+import Data.Array (fromFoldable)
+import Data.Array as Array
+import Data.Either (Either(..), either)
+import Data.Foldable (class Foldable, intercalate)
+import Data.List ((:))
 import Data.List.NonEmpty (NonEmptyList)
 import Data.List.NonEmpty as NonEmptyList
-import Data.Map (Map)
-import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number.Format as Math
-import Data.Profunctor.Strong (second)
 import Data.String (Pattern(..))
 import Data.String.CodeUnits (fromCharArray, stripSuffix)
-import Data.Tuple (Tuple(..))
+import Data.Traversable (traverse)
 import Effect.Aff (Aff, error, throwError)
 import Effect.Class.Console (log)
-import Foreign.Object as Object
 import Node.Encoding (Encoding(..))
 import Node.FS.Aff (readTextFile, writeTextFile)
 import Node.Path (FilePath)
@@ -106,15 +103,11 @@ data Statement
   | StmtUndef Ident
   | StmtImport MLHFilePath
   | StmtComment String
+  | StmtBlock (Array Statement)
 
 derive instance Eq Statement
-
 instance Show Statement where
-  show = case _ of
-    StmtDef ident value -> "StmtDef " <> show ident <> " " <> show value
-    StmtUndef ident -> "StmtUndef " <> show ident
-    StmtImport path -> "StmtImport " <> show path
-    StmtComment comment -> "StmtComment " <> show comment
+  show = formatStatement
 
 parseStatement :: forall m. Monad m => ParserT String m Statement
 parseStatement =
@@ -157,94 +150,49 @@ parseStatements :: forall m. Monad m => ParserT String m (NonEmptyList Statement
 parseStatements = endBy1 parseStatement whiteSpace
 
 --------------------------------------------------------------------------------
--- | Parsing MLH from an imported file
+-- | Expanding imported mlh files
 --------------------------------------------------------------------------------
 
-data Config
-  = CVal Value
-  | CObj (Map String Config)
+expandStatement :: Statement -> Aff Statement
+expandStatement stmt = case stmt of
+  StmtImport path -> do 
+    s <- expandImports path
+    pure $ StmtBlock $ 
+      Array.cons (StmtComment ("BEGIN " <> asFilePath path)) s `Array.snoc` StmtComment ("END " <> asFilePath path)
+  _ -> pure stmt 
 
-derive instance Eq Config
-instance Show Config where
-  show = case _ of
-    CVal value -> show value
-    CObj obj -> show obj
-
-instance A.EncodeJson Config where
-  encodeJson = case _ of
-    CVal value -> A.encodeJson value
-    CObj obj ->
-      A.fromObject
-        $ Object.fromFoldable
-        $
-          (map (second A.encodeJson) $ Map.toUnfoldable obj :: Array (Tuple String A.Json))
-
-parseConfig :: Array Statement -> Aff Config
-parseConfig statements =
-  let
-    f :: Config -> Statement -> Aff Config
-    f (CObj obj) stmt = case stmt of
-      StmtDef (Ident ident) value ->
-        pure $ CObj $ Map.insert ident (CVal value) obj
-      StmtUndef (Ident ident) ->
-        pure $ CObj $ Map.delete ident obj
-      StmtImport path -> do
-        log $ "Importing " <> asFilePath path
-        contents <- readTextFile UTF8 (asFilePath path)
-        case runParser contents parseStatements of
-          Right stmts -> do
-            cfg' <- parseConfig (fromFoldable stmts)
-            case cfg' of
-              CObj obj' -> pure $ CObj $ obj `Map.union` obj'
-              CVal _ -> throwError $ error "Expected an object in the config"
-          Left err -> throwError $ error (show err)
-      StmtComment _ ->
-        pure $ CObj obj
-    f _ _ = throwError $ error "Expected an object"
-  in
-    foldM f (CObj Map.empty) statements
-
--- this would be useful if we wanted to nest the config according to the directory heirachy
-nestObject :: Map String Config -> NonEmptyList String -> Config -> Config
-nestObject obj keys value = case NonEmptyList.uncons keys of
-  { head: key, tail: Nil } -> CObj $ Map.insert key value obj
-  { head: key, tail: (Cons k ks) } ->
-    let
-      nested = nestObject obj (NonEmptyList.cons' k ks) value
-    in
-      CObj $ Map.insert key nested obj
-
-parseRootFile :: FilePath -> Aff Config
-parseRootFile path = do
-  log $ "Importing " <> path
-  contents <- readTextFile UTF8 path
+expandImports :: MLHFilePath -> Aff (Array Statement)
+expandImports path = do
+  log $ "Importing " <> asFilePath path
+  contents <- readTextFile UTF8 (asFilePath path)
   case runParser contents parseStatements of
-    Right stmts -> parseConfig (fromFoldable stmts)
+    Right stmts -> traverse expandStatement (fromFoldable stmts)
     Left err -> throwError $ error (show err)
 
-class ToSimpleMLH a where
-  toSimpleMLH :: a -> Array (Tuple Ident Value)
-
-instance ToSimpleMLH Config where
-  toSimpleMLH = case _ of
-    CVal value -> [ Tuple (Ident "value") value ]
-    CObj obj ->
-      let
-        f (Tuple k v) = case v of
-          CObj _ -> []
-          CVal v' -> [ Tuple (Ident k) v' ]
-      in
-        concatMap f (Map.toUnfoldable obj)
-
-writeSimpleMLH :: FilePath -> Config -> Aff Unit
-writeSimpleMLH path config = do
-  let simple = toSimpleMLH config
-  let lines = map (\(Tuple (Ident k) v) -> "[%%define " <> k <> " " <> formatValue v <> "]") simple
-  let contents = intercalate "\n" lines
-  writeTextFile UTF8 path contents
+formatStatement :: Statement -> String
+formatStatement stmt = case stmt of
+  StmtDef (Ident ident) value -> "[%%define " <> ident <> " " <> formatValue value <> "]"
+  StmtUndef (Ident ident) -> "[%%undef " <> ident <> "]"
+  StmtImport path -> "[%%import \"" <> asFilePath path <> "\"]"
+  StmtComment comment -> "(*" <> comment <> "*)"
+  StmtBlock stmts -> "\n" <> intercalate "\n" (fromFoldable (formatStatement <$> stmts)) <> "\n"
   where
   formatValue = case _ of
     VInt i -> show i
     VString s -> "\"" <> s <> "\""
     VBool b -> if b then "true" else "false"
     VDecimal d -> Math.toString d
+
+
+parseRootFile :: FilePath -> Aff (Array Statement)
+parseRootFile path = do
+  log $ "Importing " <> path
+  contents <- readTextFile UTF8 path
+  let eStatments = runParser contents parseStatements
+  either (throwError <<< error <<< show) (pure <<< fromFoldable) eStatments
+
+writeSimpleMLH :: FilePath -> Array Statement -> Aff Unit
+writeSimpleMLH outFile statements = do
+  statements' <- traverse expandStatement statements
+  let formatted = formatStatement <$> statements'
+  writeTextFile UTF8 outFile (intercalate "\n" (fromFoldable formatted))
