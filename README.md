@@ -19,14 +19,10 @@ To simplify the mlh into a single file:
 ```
 > SIMPLIFIED_MLH=simple.mlh TOP_LEVEL_MLH=fixtures/config/lightnet.mlh node index.mjs
 ```
+If `SIMPLIFIED_MLH` is not supplied, the tool will overwrite `TOP_LEVEL_MLH`
 
 ## Test
 
 ```
 npm run test
 ```
-
-
-### NOTE:
-
-Put UnDef in condfig, apparently it's needed for mlh, it's not enough to just delete it.
