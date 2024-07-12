@@ -3,7 +3,8 @@ module MLHParser where
 import Prelude hiding (between)
 
 import Control.Alternative ((<|>))
-import Data.Array (fromFoldable)
+import Data.Argonaut as A
+import Data.Array (concatMap, fromFoldable)
 import Data.Either (Either(..))
 import Data.Foldable (class Foldable, foldM, intercalate)
 import Data.List (List(..), (:))
@@ -12,13 +13,16 @@ import Data.List.NonEmpty as NonEmptyList
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Number.Format as Math
+import Data.Profunctor.Strong (second)
 import Data.String (Pattern(..))
 import Data.String.CodeUnits (fromCharArray, stripSuffix)
-import Debug (traceM)
+import Data.Tuple (Tuple(..))
 import Effect.Aff (Aff, error, throwError)
 import Effect.Class.Console (log)
+import Foreign.Object as Object
 import Node.Encoding (Encoding(..))
-import Node.FS.Aff (readTextFile)
+import Node.FS.Aff (readTextFile, writeTextFile)
 import Node.Path (FilePath)
 import Parsing (ParserT, fail, runParser)
 import Parsing.Combinators (between, endBy1, many, manyTill, sepBy1, try)
@@ -44,6 +48,13 @@ instance Show Value where
     VString string -> "VString " <> show string
     VBool bool -> "VBool " <> show bool
     VDecimal d -> "VDecimal " <> show d
+
+instance A.EncodeJson Value where
+  encodeJson = case _ of
+    VInt int -> A.encodeJson int
+    VString string -> A.encodeJson string
+    VBool bool -> A.encodeJson bool
+    VDecimal d -> A.encodeJson d
 
 parseValue :: forall m. Monad m => ParserT String m Value
 parseValue =
@@ -85,13 +96,10 @@ parseMLHFilePath = MLHFilePath <$> do
   let pathChar = noneOf [ '/', ']', '\"' ]
   components <- map mkString <$>
     between (char '\"') (char '\"') (char '/' *> sepBy1 (many1 pathChar) (char '/'))
-  traceM $ show components
   let { init, last } = NonEmptyList.unsnoc components
   case stripSuffix (Pattern ".mlh") last of
     Just fn' -> pure $ NonEmptyList.snoc' init fn'
-    Nothing -> do
-      traceM "oh shit"
-      fail "Expected a .mlh file extension"
+    Nothing -> fail "Expected a .mlh file extension"
 
 data Statement
   = StmtDef Ident Value
@@ -125,11 +133,8 @@ parseStatement =
       pure (StmtUndef ident)
     parseImport = do
       void $ string "%%import"
-      traceM "Parsing import statement"
       skipSpaces
-      traceM "SkippedSpace"
       path <- parseMLHFilePath
-      traceM $ "Parsed path: " <> show path
       pure (StmtImport path)
     parseComment = do
       void $ string "(*"
@@ -165,6 +170,15 @@ instance Show Config where
     CVal value -> show value
     CObj obj -> show obj
 
+instance A.EncodeJson Config where
+  encodeJson = case _ of
+    CVal value -> A.encodeJson value
+    CObj obj ->
+      A.fromObject
+        $ Object.fromFoldable
+        $
+          (map (second A.encodeJson) $ Map.toUnfoldable obj :: Array (Tuple String A.Json))
+
 parseConfig :: Array Statement -> Aff Config
 parseConfig statements =
   let
@@ -172,31 +186,33 @@ parseConfig statements =
     f (CObj obj) stmt = case stmt of
       StmtDef (Ident ident) value ->
         pure $ CObj $ Map.insert ident (CVal value) obj
-      StmtUndef (Ident _) ->
-        --pure $ CObj $ Map.delete ident obj
-        pure $ CObj obj
-      StmtImport path@(MLHFilePath p) -> do
+      StmtUndef (Ident ident) ->
+        pure $ CObj $ Map.delete ident obj
+      StmtImport path -> do
         log $ "Importing " <> asFilePath path
         contents <- readTextFile UTF8 (asFilePath path)
         case runParser contents parseStatements of
           Right stmts -> do
             cfg' <- parseConfig (fromFoldable stmts)
-            pure $ nestObject obj p cfg'
+            case cfg' of
+              CObj obj' -> pure $ CObj $ obj `Map.union` obj'
+              CVal _ -> throwError $ error "Expected an object in the config"
           Left err -> throwError $ error (show err)
       StmtComment _ ->
         pure $ CObj obj
     f _ _ = throwError $ error "Expected an object"
   in
     foldM f (CObj Map.empty) statements
-  where
-  nestObject :: Map String Config -> NonEmptyList String -> Config -> Config
-  nestObject obj keys value = case NonEmptyList.uncons keys of
-    { head: key, tail: Nil } -> CObj $ Map.insert key value obj
-    { head: key, tail: (Cons k ks) } ->
-      let
-        nested = nestObject obj (NonEmptyList.cons' k ks) value
-      in
-        CObj $ Map.insert key nested obj
+
+-- this would be useful if we wanted to nest the config according to the directory heirachy
+nestObject :: Map String Config -> NonEmptyList String -> Config -> Config
+nestObject obj keys value = case NonEmptyList.uncons keys of
+  { head: key, tail: Nil } -> CObj $ Map.insert key value obj
+  { head: key, tail: (Cons k ks) } ->
+    let
+      nested = nestObject obj (NonEmptyList.cons' k ks) value
+    in
+      CObj $ Map.insert key nested obj
 
 parseRootFile :: FilePath -> Aff Config
 parseRootFile path = do
@@ -206,3 +222,29 @@ parseRootFile path = do
     Right stmts -> parseConfig (fromFoldable stmts)
     Left err -> throwError $ error (show err)
 
+class ToSimpleMLH a where
+  toSimpleMLH :: a -> Array (Tuple Ident Value)
+
+instance ToSimpleMLH Config where
+  toSimpleMLH = case _ of
+    CVal value -> [ Tuple (Ident "value") value ]
+    CObj obj ->
+      let
+        f (Tuple k v) = case v of
+          CObj _ -> []
+          CVal v' -> [ Tuple (Ident k) v' ]
+      in
+        concatMap f (Map.toUnfoldable obj)
+
+writeSimpleMLH :: FilePath -> Config -> Aff Unit
+writeSimpleMLH path config = do
+  let simple = toSimpleMLH config
+  let lines = map (\(Tuple (Ident k) v) -> "[%%define " <> k <> " " <> formatValue v <> "]") simple
+  let contents = intercalate "\n" lines
+  writeTextFile UTF8 path contents
+  where
+  formatValue = case _ of
+    VInt i -> show i
+    VString s -> "\"" <> s <> "\""
+    VBool b -> if b then "true" else "false"
+    VDecimal d -> Math.toString d

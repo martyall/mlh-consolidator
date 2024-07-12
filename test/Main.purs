@@ -64,7 +64,7 @@ statementSpec =
     it "can parse an undef statement" $ 
       runParser "[%%undef hello]" parseStatement `shouldEqual` Right (StmtUndef (Ident "hello"))
     it "can parse an import statement" $ 
-      case runParser "[%%import \"fixtures/cfg/medium.mlh\"]" parseStatement of
+      case runParser "[%%import \"/fixtures/cfg/medium.mlh\"]" parseStatement of
         Right (StmtImport fp) -> asFilePath fp `shouldEqual` "fixtures/cfg/medium.mlh"
         Right _ -> fail "Parser mismatch"
         Left err -> fail $ show err

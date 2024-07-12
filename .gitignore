@@ -9,4 +9,5 @@
 /.psa*
 /.spago
 .vscode
-index.js
+index.mjs
+simplified_config.mlh
