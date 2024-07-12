@@ -1,4 +1,4 @@
-# MLH to JSON
+# MLH Consolidation
 
 You can use this tool to
 
